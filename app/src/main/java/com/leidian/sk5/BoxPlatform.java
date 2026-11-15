@@ -47,11 +47,15 @@ public class BoxPlatform implements PlatformInterface {
     private static final int IFF_POINTOPOINT = 0x10;
     private static final int IFF_MULTICAST = 0x1000;
 
-    private final android.os.Handler mainHandler =
-            new android.os.Handler(android.os.Looper.getMainLooper());
-    private ConnectivityManager.NetworkCallback callback;
-
     private final Context context;
+
+    /**
+     * 是否处于监听状态。Go 回调对象是 gomobile 代理，closeDefaultInterfaceMonitor 之后
+     * 它就失效；任何未执行的延后调用必须在入口先检查这个标记，否则就是野指针访问，
+     * 表现是进程被 abort、没有任何 Java 堆栈。
+     */
+    private volatile boolean monitoring;
+    private ConnectivityManager.NetworkCallback callback;
 
     public BoxPlatform(Context context) {
         this.context = context.getApplicationContext();
@@ -183,17 +187,16 @@ public class BoxPlatform implements PlatformInterface {
 
     @Override
     public void startDefaultInterfaceMonitor(InterfaceUpdateListener listener) {
-        // 全局 TUN 必须跟随默认网卡：WiFi 切移动网络时内核要立刻换出站网卡，
-        // 否则旧网卡消失后所有连接都停在半开状态。
+        // 全局 TUN 需要跟随默认网卡：WiFi 切移动网络时内核要立刻换出站网卡。
+        // 与官方 Android 客户端一致，直接在网络回调线程上调用 listener，
+        // 不 post 到主线程——延后执行会在监听关闭后踩到已释放的 Go 对象。
         closeDefaultInterfaceMonitor(listener);
         ConnectivityManager cm =
                 (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
         if (cm == null) {
             return;
         }
-        NetworkRequest request = new NetworkRequest.Builder()
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .build();
+        monitoring = true;
         callback = new ConnectivityManager.NetworkCallback() {
             @Override
             public void onAvailable(Network network) {
@@ -206,18 +209,22 @@ public class BoxPlatform implements PlatformInterface {
             }
         };
         try {
-            cm.registerNetworkCallback(request, callback);
+            cm.registerNetworkCallback(new NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .build(), callback);
         } catch (Exception e) {
+            monitoring = false;
+            callback = null;
             LogRecorder.error("网络", "注册网络回调失败", e);
             return;
         }
-        Network active = cm.getActiveNetwork();
-        if (active != null) {
-            reportDefault(listener, active, true);
-        }
+        LogRecorder.log("网络", "默认网卡监听已启动");
     }
 
     private void reportDefault(InterfaceUpdateListener listener, Network network, boolean isDefault) {
+        if (!monitoring) {
+            return;
+        }
         ConnectivityManager cm =
                 (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
         if (cm == null) {
@@ -228,7 +235,7 @@ public class BoxPlatform implements PlatformInterface {
             return;
         }
         String name = props.getInterfaceName();
-        int index = -1;
+        int index = 0;
         try {
             java.net.NetworkInterface nic = java.net.NetworkInterface.getByName(name);
             if (nic != null) {
@@ -236,21 +243,24 @@ public class BoxPlatform implements PlatformInterface {
             }
         } catch (Exception ignored) {
         }
+        // 索引拿不到就不上报：内核拿到 0 或负数索引会当成非法网卡
+        if (index <= 0) {
+            return;
+        }
         NetworkCapabilities caps = cm.getNetworkCapabilities(network);
         boolean expensive = caps == null
                 || !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED);
-        final int idx = index;
-        mainHandler.post(() -> {
-            try {
-                listener.updateDefaultInterface(name, idx, isDefault, expensive);
-            } catch (Throwable t) {
-                LogRecorder.error("网络", "上报默认网卡失败", t);
-            }
-        });
+        try {
+            listener.updateDefaultInterface(name, index, isDefault, expensive);
+        } catch (Throwable t) {
+            LogRecorder.error("网络", "上报默认网卡失败", t);
+        }
     }
 
     @Override
     public void closeDefaultInterfaceMonitor(InterfaceUpdateListener listener) {
+        // 先清标记再注销：标记一旦为 false，未执行的回调就会直接返回
+        monitoring = false;
         if (callback == null) {
             return;
         }

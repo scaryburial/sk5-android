@@ -35,6 +35,12 @@ check("VPN 服务声明 specialUse 类型", manifest.includes('foregroundService
 check("VPN 服务有 VpnService intent-filter", manifest.includes('android.net.VpnService'));
 check("已声明开机广播接收器", manifest.includes("BootReceiver"));
 check("清单有启动 Activity", manifest.includes("android.intent.action.MAIN"));
+check("已注册 Application 以安装崩溃捕获", manifest.includes('android:name=".Sk5App"'));
+check("崩溃记录只写不丢", read("app/src/main/java/com/leidian/sk5/CrashGuard.java").includes("uncaughtException"));
+check("日志启动时能从磁盘恢复",
+  read("app/src/main/java/com/leidian/sk5/LogRecorder.java").includes("KEY_TAIL"));
+check("崩溃记录可在界面查看",
+  read("app/src/main/java/com/leidian/sk5/MainActivity.java").includes("showCrashReportIfAny"));
 check("包名统一", gradle.includes('namespace = "com.leidian.sk5"')
   && gradle.includes('applicationId = "com.leidian.sk5"'));
 
@@ -44,7 +50,17 @@ check("全局模式排除自身而非只代理自身",
   && !new RegExp("builder\\s*\\.\\s*addAllowedApplication").test(vpn));
 check("内核 socket 会被 protect", vpn.includes("protect(fd)"));
 check("TUN 建立时下发全量路由", vpn.includes('addRoute("0.0.0.0", 0)'));
+check("IPv6 地址缺失时先补地址再加路由", vpn.includes("FALLBACK_V6"));
+check("MTU 失败会降级重试", vpn.includes("buildTun(options, 1500)"));
+check("前台服务失败不崩进程", vpn.includes('启动前台服务失败'));
 check("内核未给 DNS 时回落到 TUN 网关", vpn.includes('addDnsServer("172.19.0.1")'));
+
+// ── 默认网卡回调：关闭后不能再回调 Go 对象 ──
+const platform = read("app/src/main/java/com/leidian/sk5/BoxPlatform.java");
+check("默认网卡回调有失效保护", platform.includes("monitoring")
+  && platform.includes("if (!monitoring)"));
+check("回调不延后到主线程", !platform.includes("mainHandler"));
+check("网卡索引无效时不上报", platform.includes("index <= 0"));
 
 // ── sing-box 配置 ──
 check("使用 tun 入站", node.includes('put("type", "tun")'));
@@ -60,6 +76,7 @@ check("账号密码可选", node.includes("hasAuth()"));
 // ── 连接顺序 ──
 check("先启动 VPN 服务再启内核",
   proxy.indexOf("startForegroundService") < proxy.indexOf("CoreRuntime.get().start"));
+check("连接流程在主线程执行", proxy.includes("main.post"));
 check("失败时回收内核与服务", proxy.includes("CoreRuntime.get().stop()")
   && proxy.includes("stopService"));
 

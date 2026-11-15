@@ -84,6 +84,7 @@ public class MainActivity extends Activity implements ProxyManager.Listener {
         applyInsets();
         switchTab(0);
         refreshAll();
+        showCrashReportIfAny();
     }
 
     @Override
@@ -793,23 +794,53 @@ public class MainActivity extends Activity implements ProxyManager.Listener {
     // ───────────────────────── 交互 ─────────────────────────
 
     private void onCircleClicked() {
-        ProxyManager.State state = proxy.state();
-        if (state == ProxyManager.State.CONNECTED || state == ProxyManager.State.CONNECTING) {
-            proxy.disconnect(this);
+        try {
+            ProxyManager.State state = proxy.state();
+            if (state == ProxyManager.State.CONNECTED || state == ProxyManager.State.CONNECTING) {
+                proxy.disconnect(this);
+                return;
+            }
+            if (store.current() == null) {
+                toast(getString(R.string.hint_no_node));
+                switchTab(1);
+                return;
+            }
+            requestNotificationPermission();
+            Intent prepare = VpnService.prepare(this);
+            if (prepare != null) {
+                startActivityForResult(prepare, REQ_VPN);
+            } else {
+                proxy.connect(this, store.current());
+            }
+        } catch (Throwable t) {
+            LogRecorder.error("连接", "点击处理失败", t);
+            toast(getString(R.string.err_core_start));
+        }
+    }
+
+    /** 上次启动时的崩溃记录，有就直接摆出来，用户可一键复制 */
+    private void showCrashReportIfAny() {
+        String report = CrashGuard.lastReport(this);
+        if (report.isEmpty()) {
             return;
         }
-        if (store.current() == null) {
-            toast(getString(R.string.hint_no_node));
-            switchTab(1);
-            return;
-        }
-        requestNotificationPermission();
-        Intent prepare = VpnService.prepare(this);
-        if (prepare != null) {
-            startActivityForResult(prepare, REQ_VPN);
-        } else {
-            proxy.connect(this, store.current());
-        }
+        LogRecorder.log("启动", "发现上次崩溃记录");
+        TextView view = new TextView(this);
+        view.setTextSize(10f);
+        view.setTextColor(UiKit.color(this, R.color.text_primary));
+        view.setTypeface(Typeface.MONOSPACE);
+        view.setText(report);
+        UiKit.setPadding(view, 16, 12, 16, 12);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(view);
+
+        new AlertDialog.Builder(this, R.style.DialogTheme)
+                .setTitle(R.string.crash_title)
+                .setView(scroll)
+                .setPositiveButton(R.string.close, (dialog, which) -> CrashGuard.clear(this))
+                .setNeutralButton(R.string.log_copy, (dialog, which) -> copyLog(report))
+                .show();
     }
 
     @Override

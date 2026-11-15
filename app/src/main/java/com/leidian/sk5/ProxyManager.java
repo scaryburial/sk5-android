@@ -3,12 +3,15 @@ package com.leidian.sk5;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
-
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import android.os.Handler;
+import android.os.Looper;
 
 /**
  * 连接状态的唯一来源：界面只订阅它，不直接碰内核与 VPN 服务。
+ *
+ * 整个流程都跑在主线程，用 Handler 轮询服务是否就绪，而不是 sleep。
+ * 原因：内核是 gomobile 生成的 JNI 绑定，官方客户端也从主线程调用；
+ * 放到工作线程上没有任何收益，反而多一类「回调线程不对」的故障面。
  *
  * 连接顺序有硬性要求：VPN 服务必须先建立，内核启动时才会回调 openTun。
  * 顺序反了 openTun 拿不到服务，内核直接报错退出。
@@ -24,7 +27,10 @@ public final class ProxyManager {
     }
 
     private static final ProxyManager INSTANCE = new ProxyManager();
-    private static final ExecutorService WORKER = Executors.newSingleThreadExecutor();
+    /** 等 VPN 服务就绪的上限，50ms 一次，最长 3 秒 */
+    private static final int MAX_WAIT_TICKS = 60;
+
+    private final Handler main = new Handler(Looper.getMainLooper());
 
     private volatile State state = State.DISCONNECTED;
     private volatile long connectedAt;
@@ -57,36 +63,53 @@ public final class ProxyManager {
             notifyState(State.DISCONNECTED, context.getString(R.string.err_node_invalid));
             return;
         }
-        boolean global = NodeStore.get(context).globalMode();
-        notifyState(State.CONNECTING, null);
-
         final Context app = context.getApplicationContext();
-        WORKER.execute(() -> {
-            try {
-                Intent intent = new Intent(app, Sk5VpnService.class);
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    app.startForegroundService(intent);
-                } else {
-                    app.startService(intent);
-                }
-                // startForegroundService 是异步的，等实例就绪再启内核
-                if (!waitForService(2000)) {
-                    throw new IllegalStateException(app.getString(R.string.err_vpn_denied));
-                }
-                String config = node.toSingBoxConfig(global);
-                CoreRuntime.get().start(app, config);
-                connectedAt = System.currentTimeMillis();
-                notifyState(State.CONNECTED, null);
-            } catch (Throwable t) {
-                LogRecorder.error("连接", "启动失败", t);
-                CoreRuntime.get().stop();
-                app.stopService(new Intent(app, Sk5VpnService.class));
-                connectedAt = 0;
-                String reason = t.getMessage() == null
-                        ? app.getString(R.string.err_core_start) : t.getMessage();
-                notifyState(State.DISCONNECTED, reason);
+        notifyState(State.CONNECTING, null);
+        main.post(() -> startService(app, node));
+    }
+
+    private void startService(Context app, SocksNode node) {
+        try {
+            LogRecorder.step("启动 VPN 服务");
+            Intent intent = new Intent(app, Sk5VpnService.class);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                app.startForegroundService(intent);
+            } else {
+                app.startService(intent);
             }
-        });
+        } catch (Throwable t) {
+            fail(app, t);
+            return;
+        }
+        waitForService(app, node, 0);
+    }
+
+    private void waitForService(Context app, SocksNode node, int tick) {
+        if (state != State.CONNECTING) {
+            return;
+        }
+        if (Sk5VpnService.getInstance() != null) {
+            startCore(app, node);
+            return;
+        }
+        if (tick >= MAX_WAIT_TICKS) {
+            fail(app, new IllegalStateException(app.getString(R.string.err_vpn_denied)));
+            return;
+        }
+        main.postDelayed(() -> waitForService(app, node, tick + 1), 50);
+    }
+
+    private void startCore(Context app, SocksNode node) {
+        try {
+            String config = node.toSingBoxConfig(NodeStore.get(app).globalMode());
+            LogRecorder.step("启动内核（配置 " + config.length() + " 字节）");
+            CoreRuntime.get().start(app, config);
+            connectedAt = System.currentTimeMillis();
+            LogRecorder.step("内核已启动");
+            notifyState(State.CONNECTED, null);
+        } catch (Throwable t) {
+            fail(app, t);
+        }
     }
 
     public void disconnect(Context context) {
@@ -95,9 +118,9 @@ public final class ProxyManager {
         }
         notifyState(State.DISCONNECTING, null);
         final Context app = context.getApplicationContext();
-        WORKER.execute(() -> {
-            CoreRuntime.get().stop();
-            app.stopService(new Intent(app, Sk5VpnService.class));
+        main.post(() -> {
+            LogRecorder.step("断开连接");
+            stopCoreAndService(app);
             connectedAt = 0;
             notifyState(State.DISCONNECTED, null);
         });
@@ -105,34 +128,45 @@ public final class ProxyManager {
 
     /** VPN 被系统或其他客户端抢走时，内核必须一起停，否则界面还显示已连接 */
     public void onVpnRevoked() {
-        WORKER.execute(() -> {
-            CoreRuntime.get().stop();
+        main.post(() -> {
+            LogRecorder.step("VPN 被撤销，停止内核");
+            stopCoreAndService(null);
             connectedAt = 0;
             notifyState(State.DISCONNECTED, null);
         });
     }
 
-    private static boolean waitForService(long timeoutMs) {
-        long deadline = System.currentTimeMillis() + timeoutMs;
-        while (System.currentTimeMillis() < deadline) {
-            if (Sk5VpnService.getInstance() != null) {
-                return true;
-            }
-            try {
-                Thread.sleep(50);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return false;
-            }
+    private void fail(Context app, Throwable error) {
+        LogRecorder.error("连接", "启动失败", error);
+        stopCoreAndService(app);
+        connectedAt = 0;
+        String reason = error == null || error.getMessage() == null
+                ? app.getString(R.string.err_core_start) : error.getMessage();
+        notifyState(State.DISCONNECTED, reason);
+    }
+
+    private void stopCoreAndService(Context app) {
+        try {
+            CoreRuntime.get().stop();
+        } catch (Throwable t) {
+            LogRecorder.error("连接", "停止内核失败", t);
         }
-        return Sk5VpnService.getInstance() != null;
+        if (app == null) {
+            return;
+        }
+        try {
+            app.stopService(new Intent(app, Sk5VpnService.class));
+        } catch (Throwable t) {
+            LogRecorder.error("连接", "停止服务失败", t);
+        }
     }
 
     private void notifyState(State next, String message) {
         state = next;
         final Listener target = listener;
-        if (target != null) {
-            UiKit.runOnMain(() -> target.onStateChanged(next, message));
+        if (target == null) {
+            return;
         }
+        UiKit.runOnMain(() -> target.onStateChanged(next, message));
     }
 }

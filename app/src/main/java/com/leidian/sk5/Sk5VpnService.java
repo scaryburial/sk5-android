@@ -33,6 +33,9 @@ public class Sk5VpnService extends VpnService {
     private static final String CHANNEL_ID = "sk5_status";
     private static final int NOTIFICATION_ID = 1001;
 
+    /** sing-box 未给 IPv6 地址时的兜底地址，保证 ::/0 路由合法 */
+    private static final String FALLBACK_V6 = "fdfe:dcba:9876::1";
+
     private static volatile Sk5VpnService instance;
 
     private ParcelFileDescriptor tunFd;
@@ -46,8 +49,7 @@ public class Sk5VpnService extends VpnService {
     public void onCreate() {
         super.onCreate();
         instance = this;
-        Log.i(TAG, "VPN 服务已创建");
-        LogRecorder.log("TUN", "服务已创建");
+        LogRecorder.step("VPN 服务已创建");
         createChannel();
         startAsForeground(getString(R.string.state_connecting));
     }
@@ -77,10 +79,15 @@ public class Sk5VpnService extends VpnService {
         if (notification == null) {
             return;
         }
-        notification.setContentText(text);
         NotificationManager nm = getSystemService(NotificationManager.class);
-        if (nm != null) {
+        if (nm == null) {
+            return;
+        }
+        try {
+            notification.setContentText(text);
             nm.notify(NOTIFICATION_ID, notification.build());
+        } catch (Throwable t) {
+            LogRecorder.error("TUN", "更新通知失败", t);
         }
     }
 
@@ -88,13 +95,28 @@ public class Sk5VpnService extends VpnService {
         return tunFd != null;
     }
 
-    /** 按内核给的参数建立 TUN，返回文件描述符交给内核接管 */
+    /**
+     * 按内核给的参数建立 TUN。
+     *
+     * MTU 做两级：先用内核给的（默认 9000），失败再用 1500 重试。
+     * 部分机型不接受大 MTU，直接抛 IllegalArgumentException，
+     * 而这个异常会被内核当成 openTun 失败，表现就是「连不上」。
+     */
     public synchronized int establish(TunOptions options) throws Exception {
         if (prepare(this) != null) {
             throw new IllegalStateException(getString(R.string.err_vpn_denied));
         }
+        int preferred = options.getMTU() > 0 ? Math.min(options.getMTU(), 8500) : 8500;
+        try {
+            return buildTun(options, preferred);
+        } catch (Exception first) {
+            LogRecorder.error("TUN", "以 MTU " + preferred + " 建立失败，改用 1500 重试", first);
+            closeTun();
+            return buildTun(options, 1500);
+        }
+    }
 
-        int mtu = options.getMTU() > 0 ? options.getMTU() : 9000;
+    private int buildTun(TunOptions options, int mtu) throws Exception {
         Builder builder = new Builder()
                 .setSession("SK5")
                 .setMtu(mtu);
@@ -104,18 +126,29 @@ public class Sk5VpnService extends VpnService {
         }
         builder.allowBypass();
 
-        List<String> v4 = addAddresses(builder, options.getInet4Address());
-        addAddresses(builder, options.getInet6Address());
-        if (v4.isEmpty()) {
+        boolean hasV4 = !addAddresses(builder, options.getInet4Address()).isEmpty();
+        boolean hasV6 = !addAddresses(builder, options.getInet6Address()).isEmpty();
+        if (!hasV4) {
             builder.addAddress("172.19.0.1", 30);
+            hasV4 = true;
+        }
+        if (!hasV6) {
+            // 没有 IPv6 地址时加 ::/0 路由会被部分机型拒绝，
+            // 先补一个链路本地地址，V6 流量才有地方进隧道。
+            builder.addAddress(FALLBACK_V6, 126);
+            hasV6 = true;
         }
 
         if (options.getAutoRoute()) {
-            builder.addRoute("0.0.0.0", 0);
-            builder.addRoute("::", 0);
+            if (hasV4) {
+                builder.addRoute("0.0.0.0", 0);
+            }
+            if (hasV6) {
+                builder.addRoute("::", 0);
+            }
         }
 
-        // 内核没给 DNS 地址时显式指向 TUN 网关：Android 才会把解析请求送进隧道，
+        // 内核没给 DNS 时显式指向 TUN 网关：Android 才会把解析请求送进隧道，
         // 由 sing-box 用配置里的 DoH（经节点）去查，避免本地 DNS 污染。
         boolean dnsAdded = false;
         try {
@@ -137,17 +170,19 @@ public class Sk5VpnService extends VpnService {
         try {
             builder.addDisallowedApplication(getPackageName());
         } catch (Exception e) {
-            Log.w(TAG, "排除自身失败", e);
+            LogRecorder.error("TUN", "排除自身失败", e);
         }
 
         closeTun();
-        tunFd = builder.establish();
-        if (tunFd == null) {
+        ParcelFileDescriptor fd = builder.establish();
+        if (fd == null) {
             throw new IllegalStateException(getString(R.string.err_vpn_denied));
         }
-        LogRecorder.log("TUN", "已建立 fd=" + tunFd.getFd() + " mtu=" + mtu);
+        tunFd = fd;
+        LogRecorder.step("TUN 已建立 fd=" + fd.getFd() + " mtu=" + mtu
+                + " v4=" + hasV4 + " v6=" + hasV6);
         updateNotification(getString(R.string.state_connected));
-        return tunFd.getFd();
+        return fd.getFd();
     }
 
     /** 内核连节点的 socket 必须绕过 VPN，否则流量绕回自己形成死循环 */
@@ -180,26 +215,35 @@ public class Sk5VpnService extends VpnService {
         nm.createNotificationChannel(channel);
     }
 
+    /**
+     * 前台通知。失败不能让进程崩：这里捕获后记日志，
+     * 界面上的连接状态会随之失败并给出中文说明。
+     */
     private void startAsForeground(String text) {
-        Intent open = new Intent(this, MainActivity.class);
-        PendingIntent pending = PendingIntent.getActivity(this, 0, open,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        try {
+            Intent open = new Intent(this, MainActivity.class);
+            PendingIntent pending = PendingIntent.getActivity(this, 0, open,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
-        notification = new Notification.Builder(this, CHANNEL_ID)
-                .setSmallIcon(R.drawable.ic_nav_connect)
-                .setContentTitle(getString(R.string.app_name))
-                .setContentText(text)
-                .setOngoing(true)
-                .setContentIntent(pending);
+            notification = new Notification.Builder(this, CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_nav_connect)
+                    .setContentTitle(getString(R.string.app_name))
+                    .setContentText(text)
+                    .setOngoing(true)
+                    .setContentIntent(pending);
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            notification.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE);
-        }
-        Notification built = notification.build();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(NOTIFICATION_ID, built, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
-        } else {
-            startForeground(NOTIFICATION_ID, built);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                notification.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE);
+            }
+            Notification built = notification.build();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(NOTIFICATION_ID, built, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+            } else {
+                startForeground(NOTIFICATION_ID, built);
+            }
+            LogRecorder.step("前台服务已启动");
+        } catch (Throwable t) {
+            LogRecorder.error("TUN", "启动前台服务失败", t);
         }
     }
 
@@ -214,7 +258,7 @@ public class Sk5VpnService extends VpnService {
                 builder.addAddress(prefix.address(), prefix.prefix());
                 added.add(prefix.address());
             } catch (Exception e) {
-                Log.w(TAG, "添加地址失败: " + prefix.address(), e);
+                LogRecorder.error("TUN", "添加地址失败: " + prefix.address(), e);
             }
         }
         return added;
