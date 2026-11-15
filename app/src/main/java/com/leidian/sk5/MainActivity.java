@@ -63,6 +63,16 @@ public class MainActivity extends Activity implements ProxyManager.Listener {
     private TextView smartDesc;
     private TextView globalDesc;
     private Switch autoSwitch;
+    private TextView stackGvisor;
+    private TextView stackSystem;
+    private TextView stackDesc;
+    private Switch followSwitch;
+    private TextView dnsRemote;
+    private TextView dnsDomestic;
+    private TextView dnsDesc;
+    private TextView probeText;
+    /** 手动自检进行中时置位，避免被自动自检的结果覆盖 */
+    private Boolean probeRunning;
 
     private final Map<String, Integer> latencyByEndpoint = new HashMap<>();
     private final Handler ticker = new Handler(Looper.getMainLooper());
@@ -560,6 +570,8 @@ public class MainActivity extends Activity implements ProxyManager.Listener {
         globalDesc = (TextView) modeGlobal.getTag();
 
         body.addView(buildAutoRow());
+        body.addView(buildProbeCard());
+        body.addView(buildCompatibilityCard());
         body.addView(buildLogRow());
         body.addView(buildAboutCard());
 
@@ -621,6 +633,190 @@ public class MainActivity extends Activity implements ProxyManager.Listener {
         });
         row.addView(autoSwitch);
         return row;
+    }
+
+    private LinearLayout buildProbeCard() {
+        LinearLayout card = column();
+        card.setBackgroundResource(R.drawable.bg_card);
+        UiKit.setPadding(card, 16, 14, 16, 14);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.topMargin = UiKit.dp(this, 18);
+        card.setLayoutParams(params);
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView title = UiKit.text(this, getString(R.string.probe_title), 13f,
+                UiKit.color(this, R.color.text_secondary));
+        header.addView(title, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView action = UiKit.button(this, getString(R.string.probe_run), false);
+        action.setOnClickListener(v -> runProbe());
+        header.addView(action);
+        card.addView(header);
+
+        probeText = UiKit.text(this, getString(R.string.probe_idle), 11f,
+                UiKit.color(this, R.color.text_secondary));
+        probeText.setPadding(0, UiKit.dp(this, 8), 0, 0);
+        card.addView(probeText);
+
+        return card;
+    }
+
+    private void runProbe() {
+        SocksNode node = store.current();
+        if (node == null) {
+            toast(getString(R.string.hint_no_node));
+            return;
+        }
+        probeText.setText(getString(R.string.probe_running));
+        probeRunning = Boolean.TRUE;
+        NetProbe.run(node, (nodeResult, dnsResult, tunnelResult) -> {
+            probeRunning = null;
+            probeText.setText(formatProbe(nodeResult, dnsResult, tunnelResult));
+            logProbe(nodeResult, dnsResult, tunnelResult);
+        });
+    }
+
+    private String formatProbe(NetProbe.Result node, NetProbe.Result dns, NetProbe.Result tunnel) {
+        return getString(R.string.probe_node) + "：" + node.detail + "\n"
+                + getString(R.string.probe_dns) + "：" + dns.detail + "\n"
+                + getString(R.string.probe_tunnel) + "：" + tunnel.detail;
+    }
+
+    private void logProbe(NetProbe.Result node, NetProbe.Result dns, NetProbe.Result tunnel) {
+        LogRecorder.step("自检 节点 → " + node.detail);
+        LogRecorder.step("自检 DNS → " + dns.detail);
+        LogRecorder.step("自检 隧道 → " + tunnel.detail);
+    }
+
+    private LinearLayout buildCompatibilityCard() {
+        LinearLayout card = column();
+        card.setBackgroundResource(R.drawable.bg_card);
+        UiKit.setPadding(card, 16, 14, 16, 14);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.topMargin = UiKit.dp(this, 18);
+        card.setLayoutParams(params);
+
+        TextView title = UiKit.text(this, getString(R.string.settings_compat), 13f,
+                UiKit.color(this, R.color.text_secondary));
+        card.addView(title);
+
+        TextView hint = UiKit.text(this, getString(R.string.settings_compat_desc), 11f,
+                UiKit.color(this, R.color.text_secondary));
+        hint.setPadding(0, UiKit.dp(this, 4), 0, UiKit.dp(this, 10));
+        card.addView(hint);
+
+        LinearLayout stacks = new LinearLayout(this);
+        stacks.setOrientation(LinearLayout.HORIZONTAL);
+        stackGvisor = buildStackChip(getString(R.string.stack_gvisor));
+        stackSystem = buildStackChip(getString(R.string.stack_system));
+        stackGvisor.setOnClickListener(v -> setStack(CoreOptions.STACK_GVISOR));
+        stackSystem.setOnClickListener(v -> setStack(CoreOptions.STACK_SYSTEM));
+        LinearLayout.LayoutParams left = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        LinearLayout.LayoutParams right = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        right.leftMargin = UiKit.dp(this, 10);
+        stacks.addView(stackGvisor, left);
+        stacks.addView(stackSystem, right);
+        card.addView(stacks);
+
+        stackDesc = UiKit.text(this, "", 11f, UiKit.color(this, R.color.text_secondary));
+        stackDesc.setPadding(0, UiKit.dp(this, 8), 0, 0);
+        card.addView(stackDesc);
+
+        TextView dnsLabel = UiKit.text(this, getString(R.string.settings_dns), 14f,
+                UiKit.color(this, R.color.text_primary));
+        dnsLabel.setPadding(0, UiKit.dp(this, 14), 0, UiKit.dp(this, 8));
+        card.addView(dnsLabel);
+
+        LinearLayout dnsRow = new LinearLayout(this);
+        dnsRow.setOrientation(LinearLayout.HORIZONTAL);
+        dnsRemote = buildStackChip(getString(R.string.dns_remote));
+        dnsDomestic = buildStackChip(getString(R.string.dns_domestic));
+        dnsRemote.setOnClickListener(v -> setDns(CoreOptions.DNS_REMOTE));
+        dnsDomestic.setOnClickListener(v -> setDns(CoreOptions.DNS_DOMESTIC));
+        LinearLayout.LayoutParams dnsLeft = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        LinearLayout.LayoutParams dnsRight = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        dnsRight.leftMargin = UiKit.dp(this, 10);
+        dnsRow.addView(dnsRemote, dnsLeft);
+        dnsRow.addView(dnsDomestic, dnsRight);
+        card.addView(dnsRow);
+
+        dnsDesc = UiKit.text(this, "", 11f, UiKit.color(this, R.color.text_secondary));
+        dnsDesc.setPadding(0, UiKit.dp(this, 8), 0, 0);
+        card.addView(dnsDesc);
+
+        LinearLayout followRow = new LinearLayout(this);
+        followRow.setOrientation(LinearLayout.HORIZONTAL);
+        followRow.setGravity(Gravity.CENTER_VERTICAL);
+        followRow.setPadding(0, UiKit.dp(this, 14), 0, 0);
+
+        LinearLayout followTexts = column();
+        TextView followTitle = UiKit.text(this, getString(R.string.settings_follow), 14f,
+                UiKit.color(this, R.color.text_primary));
+        TextView followSub = UiKit.text(this, getString(R.string.settings_follow_desc), 11f,
+                UiKit.color(this, R.color.text_secondary));
+        followSub.setPadding(0, UiKit.dp(this, 3), 0, 0);
+        followTexts.addView(followTitle);
+        followTexts.addView(followSub);
+        followRow.addView(followTexts, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        followSwitch = buildSwitch();
+        followSwitch.setOnCheckedChangeListener((button, checked) -> {
+            if (!suppressAutoSave) {
+                store.setFollowInterface(checked);
+            }
+        });
+        followRow.addView(followSwitch);
+        card.addView(followRow);
+
+        return card;
+    }
+
+    private TextView buildStackChip(String label) {
+        TextView chip = UiKit.text(this, label, 13f, UiKit.color(this, R.color.text_primary));
+        chip.setBackgroundResource(R.drawable.bg_option);
+        UiKit.setPadding(chip, 12, 10, 12, 10);
+        chip.setGravity(Gravity.CENTER);
+        chip.setClickable(true);
+        return chip;
+    }
+
+    private Switch buildSwitch() {
+        Switch view = new Switch(this);
+        int brand = UiKit.color(this, R.color.brand);
+        view.setThumbTintList(new ColorStateList(
+                new int[][]{{android.R.attr.state_checked}, {}},
+                new int[]{brand, UiKit.color(this, R.color.idle)}));
+        view.setTrackTintList(new ColorStateList(
+                new int[][]{{android.R.attr.state_checked}, {}},
+                new int[]{0x664C7DFF, 0x339AA3B2}));
+        return view;
+    }
+
+    private void setStack(String stack) {
+        store.setStack(stack);
+        refreshSettings();
+        if (proxy.state() == ProxyManager.State.CONNECTED) {
+            toast(getString(R.string.reconnect_to_apply));
+        }
+    }
+
+    private void setDns(String mode) {
+        store.setDnsMode(mode);
+        refreshSettings();
+        if (proxy.state() == ProxyManager.State.CONNECTED) {
+            toast(getString(R.string.reconnect_to_apply));
+        }
     }
 
     private LinearLayout buildLogRow() {
@@ -690,6 +886,21 @@ public class MainActivity extends Activity implements ProxyManager.Listener {
         suppressAutoSave = true;
         autoSwitch.setChecked(store.autoConnect());
         suppressAutoSave = false;
+
+        if (stackGvisor != null) {
+            boolean system = CoreOptions.STACK_SYSTEM.equals(store.stack());
+            stackGvisor.setSelected(!system);
+            stackSystem.setSelected(system);
+            stackDesc.setText(system ? R.string.stack_system_desc : R.string.stack_gvisor_desc);
+            suppressAutoSave = true;
+            followSwitch.setChecked(store.followInterface());
+            suppressAutoSave = false;
+
+            boolean domestic = CoreOptions.DNS_DOMESTIC.equals(store.dnsMode());
+            dnsRemote.setSelected(!domestic);
+            dnsDomestic.setSelected(domestic);
+            dnsDesc.setText(domestic ? R.string.dns_domestic_desc : R.string.dns_remote_desc);
+        }
     }
 
     // ───────────────────────── 状态刷新 ─────────────────────────
@@ -780,6 +991,11 @@ public class MainActivity extends Activity implements ProxyManager.Listener {
                     : getString(R.string.latency_ms, cached);
         }
         nodeLatency.setText(latencyText);
+
+        if (probeText != null && probeRunning == null && !proxy.lastProbe().isEmpty()
+                && state == ProxyManager.State.CONNECTED) {
+            probeText.setText(proxy.lastProbe());
+        }
     }
 
     @Override

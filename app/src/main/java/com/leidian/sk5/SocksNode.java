@@ -148,6 +148,20 @@ public final class SocksNode {
      * @param globalMode true 全部走节点；false 国内域名直连、其余走节点
      */
     public String toSingBoxConfig(boolean globalMode) {
+        return toSingBoxConfig(globalMode, CoreOptions.DEFAULT_STACK, true, CoreOptions.DEFAULT_DNS);
+    }
+
+    /**
+     * @param stack           tun 的协议栈：gvisor 走用户态，system 走系统内核
+     * @param autoDetectRoute 是否跟随默认网卡（需要应用侧提供网卡回调）
+     * @param dnsMode         解析方式：经节点 DoH 或国内直连 DNS
+     */
+    public String toSingBoxConfig(boolean globalMode, String stack, boolean autoDetectRoute) {
+        return toSingBoxConfig(globalMode, stack, autoDetectRoute, CoreOptions.DEFAULT_DNS);
+    }
+
+    public String toSingBoxConfig(boolean globalMode, String stack, boolean autoDetectRoute,
+                                 String dnsMode) {
         if (!isValid()) {
             throw new IllegalStateException("节点参数不完整");
         }
@@ -159,14 +173,21 @@ public final class SocksNode {
             log.put("timestamp", true);
             root.put("log", log);
 
-            // 解析全部交给节点那一侧的 DoH。
-            // 不用本地 DNS：国内运营商的解析结果对国外域名不可信，
-            // 一旦拿到被污染的 IP，SOCKS5 就只能连到错误地址。
+            // 解析交给节点那一侧或本地，由设置决定。
+            // 经节点 DoH 结果可信，但要求节点能访问 1.1.1.1（国内服务器常被封）；
+            // 国内 UDP DNS 一定可达，代价是被污染的域名会拿到错误地址。
             JSONObject server = new JSONObject();
-            server.put("type", "https");
-            server.put("tag", "remote");
-            server.put("server", "1.1.1.1");
-            server.put("detour", "proxy");
+            if (CoreOptions.DNS_DOMESTIC.equals(dnsMode)) {
+                server.put("type", "udp");
+                server.put("tag", "remote");
+                server.put("server", "223.5.5.5");
+                server.put("detour", "direct");
+            } else {
+                server.put("type", "https");
+                server.put("tag", "remote");
+                server.put("server", "1.1.1.1");
+                server.put("detour", "proxy");
+            }
 
             JSONObject dns = new JSONObject();
             dns.put("servers", new JSONArray().put(server));
@@ -181,9 +202,17 @@ public final class SocksNode {
             tun.put("mtu", 9000);
             tun.put("auto_route", true);
             tun.put("strict_route", false);
-            tun.put("stack", "system");
-            tun.put("sniff", false);
-            root.put("inbounds", new JSONArray().put(tun));
+            tun.put("stack", stack);
+
+            // 本机回环代理：应用自己被排除在隧道外，只有靠它才能真实穿过
+            // 「内核 → 节点 → 目标」整条链路，用于连接后的自检。
+            JSONObject local = new JSONObject();
+            local.put("type", "mixed");
+            local.put("tag", "local-in");
+            local.put("listen", "127.0.0.1");
+            local.put("listen_port", CoreOptions.LOCAL_PROXY_PORT);
+
+            root.put("inbounds", new JSONArray().put(tun).put(local));
 
             JSONObject proxy = new JSONObject();
             proxy.put("type", "socks");
@@ -206,7 +235,7 @@ public final class SocksNode {
             root.put("outbounds", outArr);
 
             JSONObject route = new JSONObject();
-            route.put("auto_detect_interface", true);
+            route.put("auto_detect_interface", autoDetectRoute);
             JSONArray rules = new JSONArray();
             if (!globalMode) {
                 JSONObject cnRule = new JSONObject();

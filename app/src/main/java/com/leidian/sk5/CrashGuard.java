@@ -19,6 +19,7 @@ public final class CrashGuard {
 
     private static final String PREFS = "sk5_crash";
     private static final String KEY_LAST = "last";
+    private static final String KEY_RUNNING = "running";
     private static final int MAX_CHARS = 20000;
 
     private CrashGuard() {
@@ -61,6 +62,15 @@ public final class CrashGuard {
             prefs(context).edit().putString(KEY_LAST, text).commit();
         } catch (Throwable ignored) {
         }
+    }
+
+    /** 标记「内核正在运行」：进程被 native 崩溃杀掉时来不及清标记，下次启动就知道了 */
+    public static void setRunning(Context context, boolean running) {
+        prefs(context).edit().putBoolean(KEY_RUNNING, running).commit();
+    }
+
+    public static boolean wasRunning(Context context) {
+        return prefs(context).getBoolean(KEY_RUNNING, false);
     }
 
     /** 取上次崩溃记录；没有则返回空串 */

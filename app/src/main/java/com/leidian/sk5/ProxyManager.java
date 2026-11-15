@@ -34,6 +34,7 @@ public final class ProxyManager {
 
     private volatile State state = State.DISCONNECTED;
     private volatile long connectedAt;
+    private volatile String lastProbe = "";
     private Listener listener;
 
     private ProxyManager() {
@@ -101,15 +102,40 @@ public final class ProxyManager {
 
     private void startCore(Context app, SocksNode node) {
         try {
-            String config = node.toSingBoxConfig(NodeStore.get(app).globalMode());
-            LogRecorder.step("启动内核（配置 " + config.length() + " 字节）");
+            NodeStore store = NodeStore.get(app);
+            String config = node.toSingBoxConfig(store.globalMode(), store.stack(),
+                    store.followInterface(), store.dnsMode());
+            LogRecorder.step("启动内核（栈 " + store.stack()
+                    + "，跟随网卡 " + store.followInterface()
+                    + "，DNS " + store.dnsMode()
+                    + "，配置 " + config.length() + " 字节）");
+            // 标记在启内核之前置位：崩在启动过程中的话，下次启动就能识别出来
+            CrashGuard.setRunning(app, true);
             CoreRuntime.get().start(app, config);
             connectedAt = System.currentTimeMillis();
             LogRecorder.step("内核已启动");
             notifyState(State.CONNECTED, null);
+            scheduleProbe(node);
         } catch (Throwable t) {
             fail(app, t);
         }
+    }
+
+    /** 连上后自动跑一次自检：日志里就能看出是节点不行还是隧道不行 */
+    private void scheduleProbe(SocksNode node) {
+        lastProbe = "检测中";
+        main.postDelayed(() -> NetProbe.run(node, (nodeResult, dnsResult, tunnelResult) -> {
+            lastProbe = "节点：" + nodeResult.detail + "\n"
+                    + "DNS：" + dnsResult.detail + "\n"
+                    + "隧道：" + tunnelResult.detail;
+            LogRecorder.step("自检 节点 → " + nodeResult.detail);
+            LogRecorder.step("自检 DNS → " + dnsResult.detail);
+            LogRecorder.step("自检 隧道 → " + tunnelResult.detail);
+        }), 2000);
+    }
+
+    public String lastProbe() {
+        return lastProbe;
     }
 
     public void disconnect(Context context) {
@@ -150,6 +176,10 @@ public final class ProxyManager {
             CoreRuntime.get().stop();
         } catch (Throwable t) {
             LogRecorder.error("连接", "停止内核失败", t);
+        }
+        if (app != null) {
+            // 正常停掉才清标记，残留标记等于「上次异常结束」
+            CrashGuard.setRunning(app, false);
         }
         if (app == null) {
             return;

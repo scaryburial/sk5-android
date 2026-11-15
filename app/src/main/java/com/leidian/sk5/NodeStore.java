@@ -17,6 +17,9 @@ public final class NodeStore {
     private static final String KEY_CURRENT = "current";
     private static final String KEY_GLOBAL = "global_mode";
     private static final String KEY_AUTO = "auto_connect";
+    private static final String KEY_STACK = "tun_stack";
+    private static final String KEY_FOLLOW = "follow_interface";
+    private static final String KEY_DNS = "dns_mode";
 
     private static NodeStore instance;
 
@@ -25,6 +28,9 @@ public final class NodeStore {
     private int currentIndex = -1;
     private boolean globalMode;
     private boolean autoConnect;
+    private String stack = CoreOptions.DEFAULT_STACK;
+    private boolean followInterface = true;
+    private String dnsMode = CoreOptions.DEFAULT_DNS;
 
     private NodeStore(Context context) {
         prefs = context.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
@@ -63,6 +69,9 @@ public final class NodeStore {
         }
         globalMode = prefs.getBoolean(KEY_GLOBAL, false);
         autoConnect = prefs.getBoolean(KEY_AUTO, false);
+        stack = prefs.getString(KEY_STACK, CoreOptions.DEFAULT_STACK);
+        followInterface = prefs.getBoolean(KEY_FOLLOW, true);
+        dnsMode = prefs.getString(KEY_DNS, CoreOptions.DEFAULT_DNS);
     }
 
     public List<SocksNode> nodes() {
@@ -153,5 +162,34 @@ public final class NodeStore {
     public void setAutoConnect(boolean value) {
         autoConnect = value;
         prefs.edit().putBoolean(KEY_AUTO, value).apply();
+    }
+
+    public String stack() {
+        return stack;
+    }
+
+    public void setStack(String value) {
+        stack = CoreOptions.STACK_SYSTEM.equals(value)
+                ? CoreOptions.STACK_SYSTEM : CoreOptions.STACK_GVISOR;
+        prefs.edit().putString(KEY_STACK, stack).apply();
+    }
+
+    public boolean followInterface() {
+        return followInterface;
+    }
+
+    public void setFollowInterface(boolean value) {
+        followInterface = value;
+        prefs.edit().putBoolean(KEY_FOLLOW, value).apply();
+    }
+
+    public String dnsMode() {
+        return dnsMode;
+    }
+
+    public void setDnsMode(String value) {
+        dnsMode = CoreOptions.DNS_DOMESTIC.equals(value)
+                ? CoreOptions.DNS_DOMESTIC : CoreOptions.DNS_REMOTE;
+        prefs.edit().putString(KEY_DNS, dnsMode).apply();
     }
 }

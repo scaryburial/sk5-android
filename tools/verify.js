@@ -39,6 +39,17 @@ check("已注册 Application 以安装崩溃捕获", manifest.includes('android:
 check("崩溃记录只写不丢", read("app/src/main/java/com/leidian/sk5/CrashGuard.java").includes("uncaughtException"));
 check("日志启动时能从磁盘恢复",
   read("app/src/main/java/com/leidian/sk5/LogRecorder.java").includes("KEY_TAIL"));
+check("日志同步落盘（native 崩溃也不丢）",
+  read("app/src/main/java/com/leidian/sk5/LogRecorder.java").includes(".commit()"));
+check("能抓设备日志里的内核崩溃输出",
+  read("app/src/main/java/com/leidian/sk5/LogRecorder.java").includes("GoLog".toLowerCase())
+  || read("app/src/main/java/com/leidian/sk5/LogRecorder.java").includes("golog"));
+check("异常结束能被下次启动识别",
+  read("app/src/main/java/com/leidian/sk5/Sk5App.java").includes("wasRunning"));
+check("日志中的账号密码已脱敏",
+  read("app/src/main/java/com/leidian/sk5/CoreRuntime.java").includes("Redact.secrets"));
+check("内核错误输出会进应用内日志",
+  read("app/src/main/java/com/leidian/sk5/CoreRuntime.java").includes('LogRecorder.logInMemory("内核"'));
 check("崩溃记录可在界面查看",
   read("app/src/main/java/com/leidian/sk5/MainActivity.java").includes("showCrashReportIfAny"));
 check("包名统一", gradle.includes('namespace = "com.leidian.sk5"')
@@ -61,13 +72,34 @@ check("默认网卡回调有失效保护", platform.includes("monitoring")
   && platform.includes("if (!monitoring)"));
 check("回调不延后到主线程", !platform.includes("mainHandler"));
 check("网卡索引无效时不上报", platform.includes("index <= 0"));
+check("上报地址去掉 IPv6 作用域（否则内核 panic）",
+  platform.includes("IfAddr.toPrefix")
+  && read("app/src/main/java/com/leidian/sk5/IfAddr.java").includes("stripZone")
+  && read("app/src/main/java/com/leidian/sk5/IfAddr.java").includes("isLinkLocalAddress"));
+check("内核提供本机回环代理用于自检", node.includes('put("type", "mixed")')
+  && node.includes("CoreOptions.LOCAL_PROXY_PORT"));
+check("自检区分节点与隧道",
+  read("app/src/main/java/com/leidian/sk5/NetProbe.java").includes("probeNode")
+  && read("app/src/main/java/com/leidian/sk5/NetProbe.java").includes("probeTunnel"));
+check("DNS 解析方式可切换",
+  read("app/src/main/java/com/leidian/sk5/SocksNode.java").includes("CoreOptions.DNS_DOMESTIC.equals(dnsMode)"));
+check("自检包含 DNS 可达性",
+  read("app/src/main/java/com/leidian/sk5/NetProbe.java").includes("probeDns"));
+check("连上后会自动跑自检",
+  read("app/src/main/java/com/leidian/sk5/ProxyManager.java").includes("scheduleProbe"));
 
 // ── sing-box 配置 ──
 check("使用 tun 入站", node.includes('put("type", "tun")'));
+check("默认协议栈是 gvisor", node.includes("CoreOptions.DEFAULT_STACK")
+  && read("app/src/main/java/com/leidian/sk5/CoreOptions.java").includes('DEFAULT_STACK = STACK_GVISOR'));
+check("默认网卡跟随可关闭",
+  read("app/src/main/java/com/leidian/sk5/BoxPlatform.java").includes("followInterface()"));
+check("设置页有兼容开关",
+  read("app/src/main/java/com/leidian/sk5/MainActivity.java").includes("buildCompatibilityCard"));
 check("使用 socks 出站", node.includes('put("type", "socks")'));
 check("SOCKS5 版本明确", node.includes('put("version", "5")'));
 check("开启 auto_route", node.includes('put("auto_route", true)'));
-check("开启 auto_detect_interface", node.includes('put("auto_detect_interface", true)'));
+check("开启 auto_detect_interface", node.includes('put("auto_detect_interface", autoDetectRoute)'));
 check("DNS 经节点转发", node.includes('put("detour", "proxy")'));
 check("智能分流有国内域名规则集", node.includes('put("tag", "cn")'));
 check("默认出站是节点", node.includes('put("final", "proxy")'));

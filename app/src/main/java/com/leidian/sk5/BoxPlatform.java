@@ -88,11 +88,10 @@ public class BoxPlatform implements PlatformInterface {
 
                 List<String> addresses = new ArrayList<>();
                 for (InterfaceAddress ia : nic.getInterfaceAddresses()) {
-                    InetAddress address = ia.getAddress();
-                    if (address == null) {
-                        continue;
+                    String prefix = IfAddr.toPrefix(ia.getAddress(), ia.getNetworkPrefixLength());
+                    if (prefix != null) {
+                        addresses.add(prefix);
                     }
-                    addresses.add(address.getHostAddress() + "/" + ia.getNetworkPrefixLength());
                 }
                 item.setAddresses(new StringList(addresses));
 
@@ -147,7 +146,10 @@ public class BoxPlatform implements PlatformInterface {
                             InetAddress gateway = route.getGateway();
                             if (route.getDestination().getPrefixLength() == 0
                                     && gateway != null && !gateway.isAnyLocalAddress()) {
-                                gateways.add(gateway.getHostAddress());
+                                String host = IfAddr.stripZone(gateway.getHostAddress());
+                                if (host != null && !host.isEmpty()) {
+                                    gateways.add(host);
+                                }
                             }
                         }
                         item.setGateway(new StringList(gateways));
@@ -191,6 +193,10 @@ public class BoxPlatform implements PlatformInterface {
         // 与官方 Android 客户端一致，直接在网络回调线程上调用 listener，
         // 不 post 到主线程——延后执行会在监听关闭后踩到已释放的 Go 对象。
         closeDefaultInterfaceMonitor(listener);
+        if (!NodeStore.get(context).followInterface()) {
+            LogRecorder.log("网络", "跟随默认网卡已关闭，跳过注册");
+            return;
+        }
         ConnectivityManager cm =
                 (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
         if (cm == null) {

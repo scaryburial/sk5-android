@@ -145,7 +145,8 @@ public final class CoreRuntime {
 
         LogRecorder.log("内核", "启动，配置长度 " + configJson.length());
         LogRecorder.log("内核", "调用来源: " + caller());
-        LogRecorder.log("内核", "配置内容: " + configJson);
+        LogRecorder.log("内核", "配置内容: " + Redact.secrets(
+                configJson.length() > 600 ? configJson.substring(0, 600) + "…" : configJson));
 
         // 先让内核校验配置，错误在这里就能拿到可读信息，而不是等到连接超时
         try {
@@ -221,6 +222,15 @@ public final class CoreRuntime {
         @Override
         public void writeDebugMessage(String message) {
             Log.d(TAG, message);
+            // 只把错误级输出带进应用内日志：内核的 debug 输出量很大，
+            // 全量写入会把连接步骤的标记挤出环形缓冲区。
+            if (message == null) {
+                return;
+            }
+            String lower = message.toLowerCase(java.util.Locale.ROOT);
+            if (lower.contains("error") || lower.contains("fatal") || lower.contains("panic")) {
+                LogRecorder.logInMemory("内核", message.trim());
+            }
         }
     }
 }

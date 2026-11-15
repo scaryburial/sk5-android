@@ -107,6 +107,28 @@ public class SocksNodeTest {
     }
 
     @Test
+    public void defaultStackIsGvisor() throws Exception {
+        SocksNode node = new SocksNode();
+        node.host = "1.2.3.4";
+        JSONObject tun = new JSONObject(node.toSingBoxConfig(false))
+                .getJSONArray("inbounds").getJSONObject(0);
+        assertEquals(CoreOptions.STACK_GVISOR, tun.getString("stack"));
+        assertTrue(new JSONObject(node.toSingBoxConfig(false)).getJSONObject("route")
+                .getBoolean("auto_detect_interface"));
+    }
+
+    @Test
+    public void stackAndFollowAreConfigurable() throws Exception {
+        SocksNode node = new SocksNode();
+        node.host = "1.2.3.4";
+        JSONObject root = new JSONObject(node.toSingBoxConfig(false,
+                CoreOptions.STACK_SYSTEM, false));
+        assertEquals(CoreOptions.STACK_SYSTEM,
+                root.getJSONArray("inbounds").getJSONObject(0).getString("stack"));
+        assertFalse(root.getJSONObject("route").getBoolean("auto_detect_interface"));
+    }
+
+    @Test
     public void writesConfigForKernelCheck() throws Exception {
         // 交给真实 sing-box 做 check：JSON 字段写错时编译期看不出来，
         // 只能靠内核自己的严格解析发现。
@@ -117,9 +139,11 @@ public class SocksNodeTest {
         node.password = "secret";
         java.io.File dir = new java.io.File(System.getProperty("java.io.tmpdir"));
         try (java.io.FileWriter smart = new java.io.FileWriter(new java.io.File(dir, "sk5-smart.json"));
-             java.io.FileWriter global = new java.io.FileWriter(new java.io.File(dir, "sk5-global.json"))) {
+             java.io.FileWriter global = new java.io.FileWriter(new java.io.File(dir, "sk5-global.json"));
+             java.io.FileWriter sys = new java.io.FileWriter(new java.io.File(dir, "sk5-system.json"))) {
             smart.write(node.toSingBoxConfig(false));
             global.write(node.toSingBoxConfig(true));
+            sys.write(node.toSingBoxConfig(false, CoreOptions.STACK_SYSTEM, false));
         }
         assertTrue(new java.io.File(dir, "sk5-smart.json").length() > 0);
     }
