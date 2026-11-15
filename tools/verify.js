@@ -1,0 +1,90 @@
+#!/usr/bin/env node
+// 静态契约校验：编译前先挡住「配置写错但能编译」的问题。
+// 每条断言都对应一个真实会出事的点，不做泛泛的格式检查。
+const fs = require("fs");
+const path = require("path");
+
+const root = path.join(__dirname, "..");
+let passed = 0;
+const failures = [];
+
+function read(rel) {
+  return fs.readFileSync(path.join(root, rel), "utf8");
+}
+
+function check(name, condition, detail) {
+  if (condition) {
+    passed++;
+  } else {
+    failures.push(`${name}${detail ? " — " + detail : ""}`);
+  }
+}
+
+const manifest = read("app/src/main/AndroidManifest.xml");
+const vpn = read("app/src/main/java/com/leidian/sk5/Sk5VpnService.java");
+const node = read("app/src/main/java/com/leidian/sk5/SocksNode.java");
+const strings = read("app/src/main/res/values/strings.xml");
+const gradle = read("app/build.gradle.kts");
+const proxy = read("app/src/main/java/com/leidian/sk5/ProxyManager.java");
+
+// ── 清单与权限 ──
+check("声明网络权限", manifest.includes("android.permission.INTERNET"));
+check("声明前台服务权限", manifest.includes("android.permission.FOREGROUND_SERVICE"));
+check("声明 VPN 绑定权限", manifest.includes("android.permission.BIND_VPN_SERVICE"));
+check("VPN 服务声明 specialUse 类型", manifest.includes('foregroundServiceType="specialUse"'));
+check("VPN 服务有 VpnService intent-filter", manifest.includes('android.net.VpnService'));
+check("已声明开机广播接收器", manifest.includes("BootReceiver"));
+check("清单有启动 Activity", manifest.includes("android.intent.action.MAIN"));
+check("包名统一", gradle.includes('namespace = "com.leidian.sk5"')
+  && gradle.includes('applicationId = "com.leidian.sk5"'));
+
+// ── 全局 TUN 的关键行为 ──
+check("全局模式排除自身而非只代理自身",
+  vpn.includes("addDisallowedApplication")
+  && !new RegExp("builder\\s*\\.\\s*addAllowedApplication").test(vpn));
+check("内核 socket 会被 protect", vpn.includes("protect(fd)"));
+check("TUN 建立时下发全量路由", vpn.includes('addRoute("0.0.0.0", 0)'));
+check("内核未给 DNS 时回落到 TUN 网关", vpn.includes('addDnsServer("172.19.0.1")'));
+
+// ── sing-box 配置 ──
+check("使用 tun 入站", node.includes('put("type", "tun")'));
+check("使用 socks 出站", node.includes('put("type", "socks")'));
+check("SOCKS5 版本明确", node.includes('put("version", "5")'));
+check("开启 auto_route", node.includes('put("auto_route", true)'));
+check("开启 auto_detect_interface", node.includes('put("auto_detect_interface", true)'));
+check("DNS 经节点转发", node.includes('put("detour", "proxy")'));
+check("智能分流有国内域名规则集", node.includes('put("tag", "cn")'));
+check("默认出站是节点", node.includes('put("final", "proxy")'));
+check("账号密码可选", node.includes("hasAuth()"));
+
+// ── 连接顺序 ──
+check("先启动 VPN 服务再启内核",
+  proxy.indexOf("startForegroundService") < proxy.indexOf("CoreRuntime.get().start"));
+check("失败时回收内核与服务", proxy.includes("CoreRuntime.get().stop()")
+  && proxy.includes("stopService"));
+
+// ── 构建配置 ──
+check("minSdk 26", gradle.includes("minSdk = 26"));
+check("仅打 arm64", gradle.includes('abiFilters += listOf("arm64-v8a")'));
+check("release 开启混淆", gradle.includes("isMinifyEnabled = true"));
+check("保留 libbox 类名", read("app/proguard-rules.pro").includes("-keep class io.nekohasekai.libbox.**"));
+
+// ── 中文与文案 ──
+check("应用名存在", new RegExp('<string name="app_name">[^<]+</string>').test(strings));
+const mustChinese = ["state_connected", "err_vpn_denied", "err_link_invalid",
+  "err_node_unreachable", "node_import", "settings_log"];
+for (const key of mustChinese) {
+  const match = strings.match(new RegExp(`<string name="${key}">([^<]*)</string>`));
+  check(`文案 ${key} 存在且有中文`, !!match && /[\u4e00-\u9fa5]/.test(match[1]));
+}
+check("没有英文占位文案", !/TODO|FIXME|Lorem ipsum/.test(strings));
+
+// ── 结果 ──
+if (failures.length > 0) {
+  console.error(`静态校验失败 ${failures.length} 项：`);
+  for (const item of failures) {
+    console.error("  ✗ " + item);
+  }
+  process.exit(1);
+}
+console.log(`静态校验通过：${passed} 项`);

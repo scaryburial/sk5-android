@@ -1,0 +1,16 @@
+# 签名材料不入库：jks 与口令只留在本地
+signing/
+
+# 内核 AAR 112MB，超过单文件上限，按 README 自行获取
+app/libs/*.aar
+
+# 构建产物
+build/
+app/build/
+.gradle/
+*.apk
+local.properties
+
+# 本地 AI/编辑器配置
+.aicode/
+.idea/

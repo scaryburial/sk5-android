@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SK5</string>
+
+    <string name="tab_connect">连接</string>
+    <string name="tab_nodes">节点</string>
+    <string name="tab_settings">设置</string>
+
+    <string name="state_disconnected">未连接</string>
+    <string name="state_connecting">正在连接</string>
+    <string name="state_connected">已连接</string>
+    <string name="state_disconnecting">正在断开</string>
+    <string name="state_sub_connected">已接管系统流量</string>
+    <string name="state_sub_connecting">请稍候</string>
+    <string name="state_sub_idle">点击开始</string>
+
+    <string name="action_connect">连接</string>
+    <string name="action_disconnect">断开</string>
+
+    <string name="hint_no_node">还没有节点，先去「节点」页添加</string>
+    <string name="label_mode">分流模式</string>
+    <string name="mode_smart">智能分流</string>
+    <string name="mode_global">全局代理</string>
+    <string name="mode_smart_desc">国内网站直连，其余走代理；直连不通时自动切到节点</string>
+    <string name="mode_global_desc">所有流量都经节点转发，速度取决于节点</string>
+
+    <string name="label_latency">延迟</string>
+    <string name="label_duration">时长</string>
+    <string name="latency_none">未测试</string>
+    <string name="latency_testing">测试中</string>
+    <string name="latency_ms">%1$d 毫秒</string>
+    <string name="latency_failed">不可达</string>
+
+    <string name="nodes_empty">暂无节点</string>
+    <string name="node_new">添加节点</string>
+    <string name="node_edit">编辑节点</string>
+    <string name="node_name">名称</string>
+    <string name="node_host">服务器地址</string>
+    <string name="node_port">端口</string>
+    <string name="node_user">用户名（可留空）</string>
+    <string name="node_pass">密码（可留空）</string>
+    <string name="node_import">粘贴 socks5:// 链接导入</string>
+    <string name="node_save">保存</string>
+    <string name="node_delete">删除</string>
+    <string name="node_use">使用</string>
+    <string name="node_in_use">使用中</string>
+    <string name="node_test">测试延迟</string>
+
+    <string name="settings_title">设置</string>
+    <string name="settings_mode">分流模式</string>
+    <string name="settings_boot">开机自动连接</string>
+    <string name="settings_boot_desc">开机后自动启动代理</string>
+    <string name="settings_links">开源平台入口</string>
+    <string name="settings_log">运行日志</string>
+    <string name="settings_version">版本</string>
+    <string name="settings_about">关于</string>
+    <string name="settings_about_desc">SK5 是一个只做 SOCKS5 转发的轻量客户端，不含浏览器。</string>
+
+    <string name="links_title">开源平台</string>
+    <string name="links_hint">点击用系统浏览器打开，用来确认代理是否生效</string>
+    <string name="link_github">GitHub</string>
+    <string name="link_gitlab">GitLab</string>
+    <string name="link_sourceforge">SourceForge</string>
+    <string name="link_huggingface">Hugging Face</string>
+
+    <string name="err_node_invalid">节点信息不完整：请填写服务器地址和有效端口</string>
+    <string name="err_link_invalid">链接格式不对，应形如 socks5://用户名:密码@服务器:端口</string>
+    <string name="err_vpn_denied">未获得 VPN 授权，无法接管系统流量</string>
+    <string name="err_vpn_conflict">系统里已有其他 VPN 在运行，请先关闭它</string>
+    <string name="err_core_start">代理内核启动失败</string>
+    <string name="err_no_network">手机当前没有网络</string>
+    <string name="err_node_unreachable">节点连不上，请检查地址、端口和账号</string>
+
+    <string name="log_title">运行日志</string>
+    <string name="log_empty">暂无日志</string>
+    <string name="log_clear">清空</string>
+    <string name="log_copy">复制</string>
+    <string name="log_copied">日志已复制</string>
+
+    <string name="notif_channel">代理状态</string>
+    <string name="notif_connected">已连接到 %1$s</string>
+    <string name="notif_connecting">正在连接 %1$s</string>
+
+    <string name="close">关闭</string>
+    <string name="confirm">确定</string>
+    <string name="cancel">取消</string>
+</resources>
