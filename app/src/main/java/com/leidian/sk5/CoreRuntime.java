@@ -136,11 +136,7 @@ public final class CoreRuntime {
                     + (now - lastStartAt) + "ms） ← " + caller());
             return false;
         }
-        lastStartAt = now;
-        lastConfigJson = configJson;
-
         stop();
-
         ensureSdk(context);
 
         LogRecorder.log("内核", "启动，配置长度 " + configJson.length());
@@ -166,6 +162,10 @@ public final class CoreRuntime {
         commandServer.startOrReloadService(configJson, override);
 
         started = true;
+        // 只有真正启动了才记账：失败也记账的话，用户立刻重试会被当成
+        // 「启动过频」跳过，而调用方却以为成功——界面显示已连接、内核并没跑。
+        lastStartAt = System.currentTimeMillis();
+        lastConfigJson = configJson;
         Log.i(TAG, "内核已启动");
         LogRecorder.log("内核", "已启动，TUN 模式");
         return true;

@@ -89,10 +89,12 @@
     <string name="probe_dns">DNS</string>
     <string name="probe_tunnel">隧道</string>
     <string name="settings_dns">域名解析</string>
+    <string name="dns_auto">自动</string>
     <string name="dns_remote">经节点 DoH</string>
-    <string name="dns_domestic">国内 DNS</string>
+    <string name="dns_domestic">本机解析</string>
+    <string name="dns_auto_desc">自动：连接前先测节点能不能访问 1.1.1.1，能就用 DoH，不能就改用本机解析</string>
     <string name="dns_remote_desc">经节点 DoH：结果可信；要求节点能访问 1.1.1.1，国内服务器常常不行</string>
-    <string name="dns_domestic_desc">国内 DNS：一定可达；代价是被污染的域名会拿到错误地址</string>
+    <string name="dns_domestic_desc">本机解析：先用系统的 DNS 服务解析，一定可达；代价是被污染的域名会拿到错误地址</string>
     <string name="crash_title">上次运行发生崩溃</string>
     <string name="settings_compat">内核兼容</string>
     <string name="settings_compat_desc">若连接后应用直接退出，可逐项切换下面两处后重试</string>

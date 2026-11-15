@@ -20,7 +20,6 @@ public final class NodeStore {
     private static final String KEY_STACK = "tun_stack";
     private static final String KEY_FOLLOW = "follow_interface";
     private static final String KEY_DNS = "dns_mode";
-
     private static NodeStore instance;
 
     private final SharedPreferences prefs;
@@ -188,8 +187,13 @@ public final class NodeStore {
     }
 
     public void setDnsMode(String value) {
-        dnsMode = CoreOptions.DNS_DOMESTIC.equals(value)
-                ? CoreOptions.DNS_DOMESTIC : CoreOptions.DNS_REMOTE;
+        if (CoreOptions.DNS_DOMESTIC.equals(value)) {
+            dnsMode = CoreOptions.DNS_DOMESTIC;
+        } else if (CoreOptions.DNS_REMOTE.equals(value)) {
+            dnsMode = CoreOptions.DNS_REMOTE;
+        } else {
+            dnsMode = CoreOptions.DNS_AUTO;
+        }
         prefs.edit().putString(KEY_DNS, dnsMode).apply();
     }
 }

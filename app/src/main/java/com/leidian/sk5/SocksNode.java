@@ -178,10 +178,12 @@ public final class SocksNode {
             // 国内 UDP DNS 一定可达，代价是被污染的域名会拿到错误地址。
             JSONObject server = new JSONObject();
             if (CoreOptions.DNS_DOMESTIC.equals(dnsMode)) {
-                server.put("type", "udp");
+                // 用宿主系统解析器（Android 的解析器）。
+                // 不能写 detour: direct——指向空 direct 出站会被内核拒绝：
+                // "detour to an empty direct outbound makes no sense"，
+                // starts 阶段直接失败，界面报内核启动失败。
+                server.put("type", "local");
                 server.put("tag", "remote");
-                server.put("server", "223.5.5.5");
-                server.put("detour", "direct");
             } else {
                 server.put("type", "https");
                 server.put("tag", "remote");

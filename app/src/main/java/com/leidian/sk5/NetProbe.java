@@ -11,21 +11,24 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
+
 /**
- * 两级网络自检，用来区分「节点不行」和「隧道不行」。
+ * 网络自检。
  *
- * 第一级直连节点做 SOCKS5 握手并请求建立到目标站点的连接，
- * 第二级通过内核在本机 2080 的混合代理再建一次——
- * 只有第二级成功，才说明「手机 → 节点 → 目标」整条链路真的通了。
+ * 必须真的走一遍数据流才算数。sing-box 的 HTTP 入站在**拨号之前**就回
+ * "200 Connection established"（见 sing@v0.9.3 protocol/http/handshake.go），
+ * 所以「CONNECT 拿到 200」只证明本机代理活着，完全不能说明隧道通。
+ * 这里的每一项都要求后续真的有字节往返：TLS 握手 + 读到真实 HTTP 响应。
  */
 public final class NetProbe {
 
-    /** 用 GitHub 做目标：这正是用户要用它的理由 */
     static final String TARGET_HOST = "github.com";
     static final int TARGET_PORT = 443;
 
     private static final int CONNECT_TIMEOUT = 8000;
-    private static final int READ_TIMEOUT = 10000;
+    private static final int READ_TIMEOUT = 15000;
     private static final ExecutorService POOL = Executors.newSingleThreadExecutor();
 
     public static final class Result {
@@ -45,29 +48,34 @@ public final class NetProbe {
         void onResult(Result node, Result dns, Result tunnel);
     }
 
+    public interface ReachCallback {
+        void onResult(boolean reachable);
+    }
+
     private NetProbe() {
     }
 
     public static void run(final SocksNode node, final Callback callback) {
         POOL.execute(() -> {
             Result nodeResult = probeNode(node);
-            Result dnsResult = nodeResult.ok ? probeDns() : new Result(false, -1, "节点不通，未测");
-            Result tunnelResult = nodeResult.ok ? probeTunnel() : new Result(false, -1, "节点不通，未测");
+            Result dnsResult = nodeResult.ok ? probeDns(node) : skipped("节点不通");
+            Result tunnelResult = nodeResult.ok ? probeTunnel() : skipped("节点不通");
             UiKit.runOnMain(() -> callback.onResult(nodeResult, dnsResult, tunnelResult));
         });
     }
 
-    /**
-     * 经节点访问 DoH 服务器本身。
-     *
-     * 很多国内节点连不上 1.1.1.1，这会让「经节点解析」的 DNS 全失败，
-     * 表现就是隧道建起来了、什么都没网。单独测这一步能直接区分责任。
-     */
-    static Result probeDns() {
-        return probeThroughLocal("1.1.1.1", 443, "DoH 服务器 1.1.1.1");
+    /** 节点能否访问境外 DoH。DNS 自动模式靠它选路 */
+    public static void probeDohViaNode(final SocksNode node, final ReachCallback callback) {
+        POOL.execute(() -> {
+            boolean reachable = probeDns(node).ok;
+            UiKit.runOnMain(() -> callback.onResult(reachable));
+        });
     }
 
-    /** 直连节点：完整走一遍 SOCKS5 握手与 CONNECT */
+    /**
+     * 直连节点：SOCKS5 握手 + 请求建连 GitHub。
+     * 节点必须真的连上目标才会回成功码，所以这一项是真实往返。
+     */
     static Result probeNode(SocksNode node) {
         long start = System.currentTimeMillis();
         try (Socket socket = new Socket()) {
@@ -113,26 +121,9 @@ public final class NetProbe {
                 return fail("节点要求不支持的认证方式 " + method);
             }
 
-            byte[] host = TARGET_HOST.getBytes(StandardCharsets.US_ASCII);
-            ByteArrayOutputStream request = new ByteArrayOutputStream();
-            request.write(0x05);
-            request.write(0x01);
-            request.write(0x00);
-            request.write(0x03);
-            request.write(host.length);
-            request.write(host);
-            request.write((TARGET_PORT >> 8) & 0xFF);
-            request.write(TARGET_PORT & 0xFF);
-            out.write(request.toByteArray());
-            out.flush();
-
-            byte[] reply = readFully(in, 4);
-            if (reply[0] != 0x05) {
-                return fail("节点的 CONNECT 响应格式不对");
-            }
-            int code = reply[1] & 0xFF;
+            int code = socksConnect(out, in, TARGET_HOST, TARGET_PORT);
             if (code != 0x00) {
-                return fail("节点拒绝连接目标站点：" + replyText(code));
+                return fail("节点拒绝连接 GitHub：" + replyText(code));
             }
             int cost = (int) (System.currentTimeMillis() - start);
             return new Result(true, cost, "握手与建连成功（" + cost + " 毫秒）");
@@ -143,12 +134,31 @@ public final class NetProbe {
         }
     }
 
-    /** 经内核 2080 回环代理建连，验证整条链路 */
-    static Result probeTunnel() {
-        return probeThroughLocal(TARGET_HOST, TARGET_PORT, TARGET_HOST);
+    /**
+     * 经节点访问 1.1.1.1 并完成 TLS 握手。
+     * 只建 TCP 不够——DoH 要用 443，443 不通就等于 DNS 全废。
+     */
+    static Result probeDns(SocksNode node) {
+        long start = System.currentTimeMillis();
+        try (Socket socket = connectViaNode(node, "1.1.1.1", 443)) {
+            SSLSocket tls = startTls(socket, "cloudflare-dns.com");
+            tls.close();
+            int cost = (int) (System.currentTimeMillis() - start);
+            return new Result(true, cost, "经节点访问 DoH 成功，TLS 已握手（" + cost + " 毫秒）");
+        } catch (SocketTimeoutException e) {
+            return fail("经节点访问 1.1.1.1 超时：节点到不了境外 DoH");
+        } catch (IOException e) {
+            return fail("经节点访问 1.1.1.1 失败：" + shortError(e));
+        } catch (IllegalStateException e) {
+            return fail(e.getMessage());
+        }
     }
 
-    private static Result probeThroughLocal(String host, int port, String label) {
+    /**
+     * 端到端：经内核 2080 建连，然后 TLS 握手 + 发一个真实 HTTP 请求，读到状态行。
+     * 只有这里成功，才说明「内核 → 节点 → 目标」整条链路真的能传数据。
+     */
+    static Result probeTunnel() {
         long start = System.currentTimeMillis();
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress("127.0.0.1", CoreOptions.LOCAL_PROXY_PORT), 3000);
@@ -156,25 +166,137 @@ public final class NetProbe {
             OutputStream out = socket.getOutputStream();
             InputStream in = socket.getInputStream();
 
-            String request = "CONNECT " + host + ":" + port + " HTTP/1.1\r\n"
-                    + "Host: " + host + ":" + port + "\r\n\r\n";
-            out.write(request.getBytes(StandardCharsets.US_ASCII));
+            out.write(("CONNECT " + TARGET_HOST + ":" + TARGET_PORT + " HTTP/1.1\r\n"
+                    + "Host: " + TARGET_HOST + ":" + TARGET_PORT + "\r\n\r\n")
+                    .getBytes(StandardCharsets.US_ASCII));
             out.flush();
-
             String status = readLine(in);
             if (status == null) {
                 return fail("本机代理无响应");
             }
             if (!status.contains(" 200")) {
-                return fail("经节点访问 " + label + " 被拒：" + status.trim());
+                return fail("本机代理拒绝了建连：" + status.trim());
+            }
+
+            // 到这里只能说明入站活着，必须继续握手与收发才算通过
+            SSLSocket tls = startTls(socket, TARGET_HOST);
+            OutputStream tlsOut = tls.getOutputStream();
+            InputStream tlsIn = tls.getInputStream();
+            tlsOut.write(("GET / HTTP/1.1\r\nHost: " + TARGET_HOST
+                    + "\r\nConnection: close\r\nUser-Agent: SK5\r\n\r\n")
+                    .getBytes(StandardCharsets.US_ASCII));
+            tlsOut.flush();
+            String httpStatus = readLine(tlsIn);
+            tls.close();
+            if (httpStatus == null || !httpStatus.startsWith("HTTP/")) {
+                return fail("隧道里没有收到 HTTP 响应");
             }
             int cost = (int) (System.currentTimeMillis() - start);
-            return new Result(true, cost, "经节点访问 " + label + " 成功（" + cost + " 毫秒）");
+            return new Result(true, cost, "经隧道访问 GitHub 成功（" + cost + " 毫秒，" + httpStatus.trim() + "）");
         } catch (SocketTimeoutException e) {
-            return fail("经节点访问 " + label + " 超时");
+            return fail("隧道无响应（超时）：连接建立了但数据出不去");
         } catch (IOException e) {
-            return fail("本机代理连不上：内核可能没起来（" + shortError(e) + "）");
+            return fail("隧道不通：" + shortError(e));
+        } catch (IllegalStateException e) {
+            return fail(e.getMessage());
         }
+    }
+
+    // ── 内部工具 ──
+
+    /** 经节点的 SOCKS5 建连，返回已连通目标的 socket */
+    private static Socket connectViaNode(SocksNode node, String host, int port) throws IOException {
+        Socket socket = new Socket();
+        socket.connect(new InetSocketAddress(node.host, node.port), CONNECT_TIMEOUT);
+        socket.setSoTimeout(READ_TIMEOUT);
+        OutputStream out = socket.getOutputStream();
+        InputStream in = socket.getInputStream();
+
+        out.write(node.hasAuth()
+                ? new byte[]{0x05, 0x02, 0x00, 0x02}
+                : new byte[]{0x05, 0x01, 0x00});
+        out.flush();
+        byte[] hello = readFully(in, 2);
+        if (hello[0] != 0x05) {
+            socket.close();
+            throw new IllegalStateException("节点不是 SOCKS5 服务");
+        }
+        int method = hello[1] & 0xFF;
+        if (method == 0x02) {
+            if (!node.hasAuth()) {
+                socket.close();
+                throw new IllegalStateException("节点要求用户名密码，但没填");
+            }
+            byte[] user = node.username.getBytes(StandardCharsets.UTF_8);
+            byte[] pass = (node.password == null ? "" : node.password)
+                    .getBytes(StandardCharsets.UTF_8);
+            ByteArrayOutputStream auth = new ByteArrayOutputStream();
+            auth.write(0x01);
+            auth.write(user.length);
+            auth.write(user);
+            auth.write(pass.length);
+            auth.write(pass);
+            out.write(auth.toByteArray());
+            out.flush();
+            if ((readFully(in, 2)[1] & 0xFF) != 0x00) {
+                socket.close();
+                throw new IllegalStateException("认证失败：用户名或密码不对");
+            }
+        } else if (method != 0x00) {
+            socket.close();
+            throw new IllegalStateException("节点要求不支持的认证方式 " + method);
+        }
+
+        int code = socksConnect(out, in, host, port);
+        if (code != 0x00) {
+            socket.close();
+            throw new IllegalStateException("节点拒绝连接 " + host + "：" + replyText(code));
+        }
+        return socket;
+    }
+
+    private static int socksConnect(OutputStream out, InputStream in, String host, int port)
+            throws IOException {
+        byte[] name = host.getBytes(StandardCharsets.US_ASCII);
+        ByteArrayOutputStream request = new ByteArrayOutputStream();
+        request.write(0x05);
+        request.write(0x01);
+        request.write(0x00);
+        request.write(0x03);
+        request.write(name.length);
+        request.write(name);
+        request.write((port >> 8) & 0xFF);
+        request.write(port & 0xFF);
+        out.write(request.toByteArray());
+        out.flush();
+
+        byte[] reply = readFully(in, 4);
+        if (reply[0] != 0x05) {
+            throw new IOException("CONNECT 响应格式不对");
+        }
+        int addressType = reply[3] & 0xFF;
+        if (addressType == 0x01) {
+            readFully(in, 4);
+        } else if (addressType == 0x04) {
+            readFully(in, 16);
+        } else if (addressType == 0x03) {
+            int length = readFully(in, 1)[0] & 0xFF;
+            readFully(in, length);
+        }
+        readFully(in, 2);
+        return reply[1] & 0xFF;
+    }
+
+    private static SSLSocket startTls(Socket socket, String host) throws IOException {
+        SSLSocketFactory factory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+        SSLSocket tls = (SSLSocket) factory.createSocket(socket, host, TARGET_PORT, true);
+        tls.setSoTimeout(READ_TIMEOUT);
+        tls.startHandshake();
+        return tls;
+    }
+
+    private static Result skipped(String reason) {
+        return new Result(false, -1, reason + "，未测");
     }
 
     private static Result fail(String detail) {

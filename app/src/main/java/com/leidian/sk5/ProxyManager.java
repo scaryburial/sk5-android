@@ -35,6 +35,9 @@ public final class ProxyManager {
     private volatile State state = State.DISCONNECTED;
     private volatile long connectedAt;
     private volatile String lastProbe = "";
+    /** 自动 DNS 的测定结果，同一个节点不重复测 */
+    private final java.util.Map<String, String> autoDnsChoice =
+            new java.util.concurrent.ConcurrentHashMap<>();
     private Listener listener;
 
     private ProxyManager() {
@@ -101,17 +104,44 @@ public final class ProxyManager {
     }
 
     private void startCore(Context app, SocksNode node) {
+        NodeStore store = NodeStore.get(app);
+        String mode = store.dnsMode();
+        if (!CoreOptions.DNS_AUTO.equals(mode)) {
+            launchCore(app, node, mode);
+            return;
+        }
+        String cached = autoDnsChoice.get(node.endpoint());
+        if (cached != null) {
+            launchCore(app, node, cached);
+            return;
+        }
+        LogRecorder.step("自动选择 DNS：检测节点能否访问 1.1.1.1");
+        NetProbe.probeDohViaNode(node, reachable -> {
+            String chosen = reachable ? CoreOptions.DNS_REMOTE : CoreOptions.DNS_DOMESTIC;
+            autoDnsChoice.put(node.endpoint(), chosen);
+            LogRecorder.step("自动选择 DNS → " + (reachable
+                    ? "经节点 DoH（节点能到 1.1.1.1）"
+                    : "宿主解析器（节点到不了 1.1.1.1）"));
+            launchCore(app, node, chosen);
+        });
+    }
+
+    private void launchCore(Context app, SocksNode node, String dnsMode) {
         try {
             NodeStore store = NodeStore.get(app);
             String config = node.toSingBoxConfig(store.globalMode(), store.stack(),
-                    store.followInterface(), store.dnsMode());
+                    store.followInterface(), dnsMode);
             LogRecorder.step("启动内核（栈 " + store.stack()
                     + "，跟随网卡 " + store.followInterface()
-                    + "，DNS " + store.dnsMode()
+                    + "，DNS " + dnsMode
                     + "，配置 " + config.length() + " 字节）");
             // 标记在启内核之前置位：崩在启动过程中的话，下次启动就能识别出来
             CrashGuard.setRunning(app, true);
-            CoreRuntime.get().start(app, config);
+            boolean started = CoreRuntime.get().start(app, config);
+            if (!started) {
+                // 被节流跳过就必须当失败处理，否则界面显示已连接而内核没跑
+                throw new IllegalStateException("内核启动被跳过，请稍后重试");
+            }
             connectedAt = System.currentTimeMillis();
             LogRecorder.step("内核已启动");
             notifyState(State.CONNECTED, null);

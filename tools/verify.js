@@ -83,6 +83,21 @@ check("自检区分节点与隧道",
   && read("app/src/main/java/com/leidian/sk5/NetProbe.java").includes("probeTunnel"));
 check("DNS 解析方式可切换",
   read("app/src/main/java/com/leidian/sk5/SocksNode.java").includes("CoreOptions.DNS_DOMESTIC.equals(dnsMode)"));
+check("本机解析不留 detour（否则内核拒绝启动）",
+  !read("app/src/main/java/com/leidian/sk5/SocksNode.java").includes('put("detour", "direct")'));
+check("本地解析由宿主提供",
+  read("app/src/main/java/com/leidian/sk5/BoxPlatform.java").includes("PlatformDns")
+  && read("app/src/main/java/com/leidian/sk5/BoxPlatform.java").includes("LocalDNSTransport"));
+check("内核启动失败不会被当成已连接",
+  read("app/src/main/java/com/leidian/sk5/ProxyManager.java").includes("if (!started)"));
+check("只有启动成功才记账限流",
+  read("app/src/main/java/com/leidian/sk5/CoreRuntime.java").includes("lastStartAt = System.currentTimeMillis();"));
+check("自检要求真实 TLS 握手与 HTTP 响应",
+  read("app/src/main/java/com/leidian/sk5/NetProbe.java").includes("startHandshake")
+  && read("app/src/main/java/com/leidian/sk5/NetProbe.java").includes("GET / HTTP/1.1"));
+check("DNS 自动模式可预先测定",
+  read("app/src/main/java/com/leidian/sk5/NetProbe.java").includes("probeDohViaNode")
+  && read("app/src/main/java/com/leidian/sk5/ProxyManager.java").includes("CoreOptions.DNS_AUTO"));
 check("自检包含 DNS 可达性",
   read("app/src/main/java/com/leidian/sk5/NetProbe.java").includes("probeDns"));
 check("连上后会自动跑自检",

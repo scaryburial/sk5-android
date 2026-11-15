@@ -17,11 +17,13 @@ public final class CoreOptions {
     /** 内核在本机回环提供的混合代理，用于连接后的端到端自检 */
     public static final int LOCAL_PROXY_PORT = 2080;
 
+    /** 先探测节点能否访问 1.1.1.1，再决定用哪种 DNS */
+    public static final String DNS_AUTO = "auto";
     /** 境外 DoH，经节点解析：结果可信，但要求节点能访问 1.1.1.1 */
     public static final String DNS_REMOTE = "remote";
-    /** 国内 UDP DNS，直连解析：一定可达，但被污染的域名会拿到错误地址 */
+    /** 宿主系统解析器（Android 解析器），直连：一定可达，但结果可能被污染 */
     public static final String DNS_DOMESTIC = "domestic";
-    public static final String DEFAULT_DNS = DNS_REMOTE;
+    public static final String DEFAULT_DNS = DNS_AUTO;
 
     private CoreOptions() {
     }

@@ -67,6 +67,7 @@ public class MainActivity extends Activity implements ProxyManager.Listener {
     private TextView stackSystem;
     private TextView stackDesc;
     private Switch followSwitch;
+    private TextView dnsAuto;
     private TextView dnsRemote;
     private TextView dnsDomestic;
     private TextView dnsDesc;
@@ -678,8 +679,7 @@ public class MainActivity extends Activity implements ProxyManager.Listener {
             probeRunning = null;
             probeText.setText(formatProbe(nodeResult, dnsResult, tunnelResult));
             logProbe(nodeResult, dnsResult, tunnelResult);
-        });
-    }
+        });    }
 
     private String formatProbe(NetProbe.Result node, NetProbe.Result dns, NetProbe.Result tunnel) {
         return getString(R.string.probe_node) + "：" + node.detail + "\n"
@@ -737,16 +737,22 @@ public class MainActivity extends Activity implements ProxyManager.Listener {
 
         LinearLayout dnsRow = new LinearLayout(this);
         dnsRow.setOrientation(LinearLayout.HORIZONTAL);
+        dnsAuto = buildStackChip(getString(R.string.dns_auto));
         dnsRemote = buildStackChip(getString(R.string.dns_remote));
         dnsDomestic = buildStackChip(getString(R.string.dns_domestic));
+        dnsAuto.setOnClickListener(v -> setDns(CoreOptions.DNS_AUTO));
         dnsRemote.setOnClickListener(v -> setDns(CoreOptions.DNS_REMOTE));
         dnsDomestic.setOnClickListener(v -> setDns(CoreOptions.DNS_DOMESTIC));
         LinearLayout.LayoutParams dnsLeft = new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        LinearLayout.LayoutParams dnsMid = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        dnsMid.leftMargin = UiKit.dp(this, 8);
         LinearLayout.LayoutParams dnsRight = new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        dnsRight.leftMargin = UiKit.dp(this, 10);
-        dnsRow.addView(dnsRemote, dnsLeft);
+        dnsRight.leftMargin = UiKit.dp(this, 8);
+        dnsRow.addView(dnsAuto, dnsLeft);
+        dnsRow.addView(dnsRemote, dnsMid);
         dnsRow.addView(dnsDomestic, dnsRight);
         card.addView(dnsRow);
 
@@ -897,9 +903,12 @@ public class MainActivity extends Activity implements ProxyManager.Listener {
             suppressAutoSave = false;
 
             boolean domestic = CoreOptions.DNS_DOMESTIC.equals(store.dnsMode());
-            dnsRemote.setSelected(!domestic);
-            dnsDomestic.setSelected(domestic);
-            dnsDesc.setText(domestic ? R.string.dns_domestic_desc : R.string.dns_remote_desc);
+            boolean auto = CoreOptions.DNS_AUTO.equals(store.dnsMode());
+            dnsAuto.setSelected(auto);
+            dnsRemote.setSelected(!auto && !domestic);
+            dnsDomestic.setSelected(!auto && domestic);
+            dnsDesc.setText(auto ? R.string.dns_auto_desc
+                    : domestic ? R.string.dns_domestic_desc : R.string.dns_remote_desc);
         }
     }
 

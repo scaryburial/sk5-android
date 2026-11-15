@@ -8,6 +8,7 @@ import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
 import android.os.Build;
 
+import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InterfaceAddress;
 import java.util.ArrayList;
@@ -17,6 +18,7 @@ import java.util.List;
 import io.nekohasekai.libbox.BridgeOptions;
 import io.nekohasekai.libbox.BridgeSession;
 import io.nekohasekai.libbox.ConnectionOwner;
+import io.nekohasekai.libbox.ExchangeContext;
 import io.nekohasekai.libbox.InterfaceUpdateListener;
 import io.nekohasekai.libbox.LocalDNSTransport;
 import io.nekohasekai.libbox.NeighborUpdateListener;
@@ -305,8 +307,10 @@ public class BoxPlatform implements PlatformInterface {
 
     @Override
     public LocalDNSTransport localDNSTransport() {
-        // 返回 null 表示“不使用系统解析器”，这是 libbox 明确支持的取值
-        return null;
+        // 内核的 "local" DNS 服务器需要宿主提供解析能力。
+        // 这里用 Android 系统解析器：本应用被排除在隧道外，所以这条路径是直连的，
+        // 不会反过来又回到内核自己的 DNS。
+        return new PlatformDns();
     }
 
     @Override
@@ -421,6 +425,55 @@ public class BoxPlatform implements PlatformInterface {
     }
 
     // ── gomobile 要求的迭代器实现 ──
+
+    /**
+     * 本地 DNS。raw() 返回 false，内核就只用 lookup 解析 A/AAAA，
+     * 不需要我们拼 DNS 报文。
+     */
+    private static final class PlatformDns implements LocalDNSTransport {
+
+        @Override
+        public boolean raw() {
+            return false;
+        }
+
+        @Override
+        public void exchange(ExchangeContext context, byte[] message) {
+            // raw() 为 false 时内核不会调用这里
+        }
+
+        @Override
+        public void lookup(ExchangeContext context, String network, String domain) {
+            try {
+                InetAddress[] all = InetAddress.getAllByName(domain);
+                boolean wantV4 = !"ip6".equals(network);
+                int count = 0;
+                for (InetAddress address : all) {
+                    boolean isV4 = address instanceof Inet4Address;
+                    if (isV4 != wantV4) {
+                        continue;
+                    }
+                    if (address.isAnyLocalAddress() || address.isLinkLocalAddress()) {
+                        continue;
+                    }
+                    String host = IfAddr.stripZone(address.getHostAddress());
+                    if (host == null || host.isEmpty()) {
+                        continue;
+                    }
+                    context.success(host);
+                    count++;
+                }
+                if (count == 0) {
+                    // 没有对应族的地址，返回 NXDOMAIN 让内核走下一个服务器
+                    context.errorCode(3);
+                }
+            } catch (Exception e) {
+                LogRecorder.logInMemory("DNS", "系统解析失败 " + domain + "：" + e);
+                context.errorCode(2);
+            }
+        }
+    }
+
 
     private static final class StringList implements StringIterator {
         private final List<String> items;

@@ -129,6 +129,23 @@ public class SocksNodeTest {
     }
 
     @Test
+    public void domesticDnsUsesLocalTransport() throws Exception {
+        SocksNode node = new SocksNode();
+        node.host = "1.2.3.4";
+        JSONObject root = new JSONObject(node.toSingBoxConfig(false,
+                CoreOptions.STACK_GVISOR, true, CoreOptions.DNS_DOMESTIC));
+        JSONObject server = root.getJSONObject("dns").getJSONArray("servers").getJSONObject(0);
+        assertEquals("local", server.getString("type"));
+        // 带 detour 指向空 direct 出站会让内核拒绝启动，回归御住
+        assertFalse(server.has("detour"));
+    }
+
+    @Test
+    public void defaultDnsModeIsAuto() {
+        assertEquals(CoreOptions.DNS_AUTO, CoreOptions.DEFAULT_DNS);
+    }
+
+    @Test
     public void writesConfigForKernelCheck() throws Exception {
         // 交给真实 sing-box 做 check：JSON 字段写错时编译期看不出来，
         // 只能靠内核自己的严格解析发现。
@@ -140,10 +157,13 @@ public class SocksNodeTest {
         java.io.File dir = new java.io.File(System.getProperty("java.io.tmpdir"));
         try (java.io.FileWriter smart = new java.io.FileWriter(new java.io.File(dir, "sk5-smart.json"));
              java.io.FileWriter global = new java.io.FileWriter(new java.io.File(dir, "sk5-global.json"));
-             java.io.FileWriter sys = new java.io.FileWriter(new java.io.File(dir, "sk5-system.json"))) {
+             java.io.FileWriter sys = new java.io.FileWriter(new java.io.File(dir, "sk5-system.json"));
+             java.io.FileWriter domestic = new java.io.FileWriter(new java.io.File(dir, "sk5-domestic.json"))) {
             smart.write(node.toSingBoxConfig(false));
             global.write(node.toSingBoxConfig(true));
             sys.write(node.toSingBoxConfig(false, CoreOptions.STACK_SYSTEM, false));
+            domestic.write(node.toSingBoxConfig(false, CoreOptions.STACK_GVISOR, true,
+                    CoreOptions.DNS_DOMESTIC));
         }
         assertTrue(new java.io.File(dir, "sk5-smart.json").length() > 0);
     }
